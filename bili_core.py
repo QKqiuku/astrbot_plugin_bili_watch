@@ -2,6 +2,7 @@ import asyncio
 import io
 import json
 import re
+import struct
 import time
 from pathlib import Path
 
@@ -96,35 +97,104 @@ async def fetch_video_info(session: aiohttp.ClientSession, bvid: str) -> dict:
             f"B站视频信息失败: {payload.get('code')} {payload.get('message')}"
         )
     data = payload.get("data") or {}
+    pages = data.get("pages") or []
     return {
         "title": data.get("title", ""),
         "duration": int(data.get("duration") or 0),
         "cid": int(data.get("cid") or 0),
         "desc": (data.get("desc") or "")[:300],
         "owner": (data.get("owner") or {}).get("name", ""),
+        "page_count": max(1, len(pages)),
+        "first_page_duration": int((pages[0] or {}).get("duration") or data.get("duration") or 0)
+        if pages
+        else int(data.get("duration") or 0),
     }
 
 
-async def fetch_storyboard(session: aiohttp.ClientSession, bvid: str, cid: int = 0) -> dict:
+def _normalize_index(index: list, duration: int = 0) -> list:
+    """B站 index 偶尔是毫秒、偶尔是 dict；统一成 [0, 秒, 秒...]。"""
+    if len(index) <= 1:
+        return list(index or [])
+    vals = []
+    for item in index[1:]:
+        try:
+            raw = item.get("timestamp") if isinstance(item, dict) else item
+            vals.append(float(raw))
+        except (TypeError, ValueError):
+            continue
+    if not vals:
+        return []
+    biggest = max(vals)
+    if duration > 0 and biggest > duration * 1.5:
+        vals = [v / 1000.0 for v in vals]
+    return [0] + [max(0, int(round(v))) for v in vals]
+
+
+async def _pvdata_index(session: aiohttp.ClientSession, data: dict) -> list:
+    """index 为空时的兜底：pvdata 是大端 uint16 秒数数组。"""
+    url = _sprite_url(str(data.get("pvdata") or ""))
+    if not url:
+        return []
+    try:
+        async with session.get(url, timeout=_HTTP_TIMEOUT) as resp:
+            resp.raise_for_status()
+            raw = await resp.read()
+    except Exception:
+        return []
+    if not raw or len(raw) % 2:
+        return []
+    count = len(raw) // 2
+    if count > 20000:
+        return []
+    return [0] + [int(v) for v in struct.unpack(f">{count}H", raw)]
+
+
+async def fetch_storyboard(
+    session: aiohttp.ClientSession,
+    bvid: str,
+    cid: int = 0,
+    duration: int = 0,
+) -> dict:
     key = (bvid, int(cid or 0))
     cached = _STORY_CACHE.get(key)
     if cached and time.monotonic() - cached[0] < _CACHE_TTL:
         return cached[1]
+
     params = {"bvid": bvid, "index": "1"}
     if cid:
         params["cid"] = str(cid)
-    payload = await _get_json(
-        session,
-        "https://api.bilibili.com/x/player/videoshot",
-        params,
-    )
-    if payload.get("code") != 0:
-        raise RuntimeError(
-            f"B站快照失败: {payload.get('code')} {payload.get('message')}"
+
+    data = {}
+    last_error = None
+    for attempt in range(2):
+        payload = await _get_json(
+            session,
+            "https://api.bilibili.com/x/player/videoshot",
+            params,
         )
-    data = payload.get("data") or {}
+        if payload.get("code") == 0:
+            data = payload.get("data") or {}
+            index = _normalize_index(data.get("index") or [], duration)
+            if len(index) <= 1 and data.get("pvdata"):
+                index = await _pvdata_index(session, data)
+            if data.get("image") and len(index) > 1:
+                data["index"] = index
+                break
+            last_error = RuntimeError("视频快照为空或缺少时间表")
+        else:
+            last_error = RuntimeError(
+                f"B站快照失败: {payload.get('code')} {payload.get('message')}"
+            )
+        if attempt == 0:
+            await asyncio.sleep(1.0)
+
     if not data.get("image"):
-        raise RuntimeError("这个视频没有可用的快照拼版")
+        raise last_error or RuntimeError("这个视频没有可用的快照拼版")
+    if len(data.get("index") or []) <= 1 and data.get("pvdata"):
+        data["index"] = await _pvdata_index(session, data)
+    if not data.get("index"):
+        data["index"] = []
+
     story = {
         "images": data.get("image") or [],
         "index": data.get("index") or [],
@@ -209,8 +279,9 @@ def select_frames(
     end: int = 0,
     count: int = 10,
     max_frames: int = 40,
+    at: list[float] | None = None,
 ) -> list[tuple[int, int]]:
-    """Return [(frame_index, timestamp), ...] for the requested range/cap."""
+    """Return [(frame_index, timestamp), ...] for the requested range/cap/at."""
     times = _frame_times(story)
     if not times:
         raise RuntimeError("快照时间表为空")
@@ -228,8 +299,33 @@ def select_frames(
     if not candidates:
         raise RuntimeError(f"在 {start}–{end or '结尾'} 秒内没有可用快照")
 
-    requested = int(count or 0)
     cap = max(0, int(max_frames or 0))
+
+    # at = 指定时间点：取最接近的快照，保持时间顺序，去重
+    if at:
+        targets = []
+        for item in at:
+            try:
+                targets.append(max(0.0, float(item)))
+            except (TypeError, ValueError):
+                continue
+        if not targets:
+            raise RuntimeError("at 里没有可用的秒数")
+        picked = []
+        seen = set()
+        for target in targets:
+            nearest = min(candidates, key=lambda e: abs(e[1] - target))
+            if nearest[0] not in seen:
+                seen.add(nearest[0])
+                picked.append(nearest)
+        picked.sort(key=lambda e: e[1])
+        if cap > 0:
+            picked = picked[:cap]
+        if not picked:
+            raise RuntimeError("没有匹配到任何快照")
+        return picked
+
+    requested = int(count or 0)
     if requested <= 0:
         # 0 = 未指定：有上限就用上限，没有上限就全部
         requested = cap if cap > 0 else len(candidates)
@@ -252,7 +348,7 @@ async def crop_frames(
     session: aiohttp.ClientSession,
     story: dict,
     picks: list[tuple[int, int]],
-    scale: int = 2,
+    width: int = 480,
 ) -> list[bytes]:
     x_len = story["x_len"]
     y_len = story["y_len"]
@@ -296,9 +392,11 @@ async def crop_frames(
             (row + 1) * y_size,
         )
         frame = sprite.crop(box)
-        if scale > 1:
+        target_w = max(0, int(width or 0))
+        if target_w and frame.width != target_w:
+            ratio = target_w / frame.width
             frame = frame.resize(
-                (x_size * scale, y_size * scale),
+                (target_w, max(1, round(frame.height * ratio))),
                 PILImage.Resampling.LANCZOS,
             )
         buf = io.BytesIO()
@@ -317,16 +415,21 @@ async def prepare(
     max_frames: int = 40,
     initial_frames: int = 10,
     subtitle_max_chars: int = 6000,
+    at: list[float] | None = None,
+    frame_width: int = 480,
 ) -> dict:
     bvid = extract_bvid(bvid_raw)
     cred = load_credential(credential_path)
     max_frames = max(0, int(max_frames or 0))
     subtitle_max_chars = max(0, int(subtitle_max_chars or 0))
+    frame_width = max(0, min(int(frame_width or 480), 960))
 
     async with aiohttp.ClientSession(headers=_headers(cred)) as session:
         info = await fetch_video_info(session, bvid)
-        story = await fetch_storyboard(session, bvid, info["cid"])
-        total = len(_frame_times(story))
+        story = await fetch_storyboard(session, bvid, info["cid"], info["duration"])
+        times = _frame_times(story)
+        total = len(times)
+        covered_sec = int(times[-1]) if times else 0
 
         if initial:
             count = max(1, int(initial_frames or 10))
@@ -338,6 +441,12 @@ async def prepare(
                 end=0,
                 count=count,
                 max_frames=count,
+            )
+        elif at:
+            picks = select_frames(
+                story,
+                at=at,
+                max_frames=max_frames,
             )
         else:
             requested = int(frames or 0)
@@ -354,12 +463,13 @@ async def prepare(
         subtitle = await fetch_subtitle(
             session, bvid, info["cid"], max_chars=subtitle_max_chars
         )
-        images = await crop_frames(session, story, picks)
+        images = await crop_frames(session, story, picks, width=frame_width)
 
     return {
         "bvid": bvid,
         "info": info,
         "total_frames": total,
+        "covered_sec": covered_sec,
         "picks": picks,
         "images": images,
         "subtitle": subtitle,

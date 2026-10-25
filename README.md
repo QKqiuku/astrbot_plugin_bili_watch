@@ -33,6 +33,16 @@ BiliWatch 把“看视频”拆成两次工具调用：
 - **只读安全**：不评论、不发动态、不操作 B 站账号。
 - **短缓存**：同一进程内快照/字幕缓存 5 分钟，减少连续 preview → more 的风控概率。
 
+## 和现有 B 站工具的关系
+
+BiliWatch **只新增两个 LLM 工具**，不会替换、禁用或修改你已有的 B 站 MCP 工具：
+
+- 现有 `bili_subtitle`：继续可用；BiliWatch 的预览里也会附带字幕，两者不冲突。
+- 现有 `bili_danmaku`：继续可用；BiliWatch 不抓弹幕，想看弹幕仍调用它。
+- 现有 `bili_comments` / `bili_rank` / `bili_hot_videos` 等：完全不受影响。
+
+建议分工：**画面用 BiliWatch，弹幕/评论用原 MCP**；同一个视频不要短时间反复 preview + more + danmaku，避免 B 站风控。
+
 ## 前置条件
 
 | 条件 | 是否必需 | 说明 |
@@ -109,6 +119,7 @@ astrbot_plugin_bili_watch/
 | `initial_frames` | `10` | 第一次概览抽多少帧；建议 6–10 |
 | `max_frames` | `40` | 第二次续看单次上限；`0` = 允许全部快照 |
 | `subtitle_max_chars` | `6000` | 字幕最多带多少字符；`0` = 不截断 |
+| `frame_width` | `480` | 画面帧输出宽度；源图 160×90 会缩放到 480×270 |
 | `credential_path` | `D:\bilibili-mcp\bili_credential.json` | B 站凭证路径 |
 
 > 全量可能有一两百张甚至更多图片，视觉模型的上下文、费用和延迟都会明显增加。日常建议 `max_frames=20–40`；只有明确“整片过一遍”时才设 `0`。
@@ -129,7 +140,7 @@ astrbot_plugin_bili_watch/
 她会得到：
 
 - 视频标题、时长、UP 主；
-- 全片快照总帧数；
+- 分 P 数、快照总帧数、覆盖到第几秒；
 - 本次 10 个时间点的关键帧（图片）；
 - 字幕（如果有）；
 - 下一步提示：某段值得看就调用 `bili_watch_more`。
@@ -146,6 +157,19 @@ start  = 30
 end    = 120
 frames = 8
 ```
+
+### 第二次：只看指定时间点
+
+如果字幕里提到几个时刻，直接传 `at`（逗号分隔的秒数），比 `start/end` 更准：
+
+> 用 `bili_watch_more` 看 BV1xrnz6gEVD 的 30、90、150 秒，抽 3 帧。
+
+```text
+bvid = BV1xrnz6gEVD
+at   = "30,90,150"
+```
+
+`at` 会为每个时间点选最接近的快照；填了 `at` 就忽略 `start/end`。
 
 ### 第二次：看全片
 
@@ -183,7 +207,7 @@ flowchart TB
   B --> C[videoshot: 10x10 拼版 + 时间表]
   B --> D[player/v2: 字幕]
   C --> E[按时间均匀选 10 帧]
-  E --> F[从拼版裁 160x90，放大 2 倍]
+  E --> F[从拼版裁切，缩放到 480×270]
   D --> G[文本：元信息 + 字幕 + 下一步提示]
   F --> H[CallToolResult: TextContent + ImageContent...]
   G --> H
@@ -196,8 +220,9 @@ flowchart TB
 
 关键点：
 
-- B 站 `videoshot` 按画面变化取帧，不是逐帧视频；每帧源图约 160×90。
-- 插件把每帧放大 2 倍到 320×180，裁成 JPEG，放在 `CallToolResult` 的 `ImageContent` 里。
+- B 站 `videoshot` 按画面变化取帧，不是逐帧视频；每帧源图可能是 160×90 或 480×270。
+- 插件把每帧裁切并缩放到 `frame_width`（默认 480 宽，即 480×270），编码成 JPEG 放进 `CallToolResult` 的 `ImageContent` 里。
+- 快照 `index` 为空时会读 `pvdata`（大端 uint16 秒数）兜底；时间戳兼容秒/毫秒。
 - AstrBot 的本地工具执行器会缓存 `ImageContent`，并把它交给视觉模型。
 - 字幕来自 `x/player/v2` 的 `subtitle_url`，需要 B 站 Cookie。
 - 快照和字幕在进程内缓存 5 分钟，避免 preview → more 重复请求。

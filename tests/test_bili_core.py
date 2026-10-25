@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from bili_core import (  # noqa: E402
+    _normalize_index,
     cookie_header,
     extract_bvid,
     load_credential,
@@ -76,6 +77,16 @@ class BiliWatchCoreTests(unittest.TestCase):
     def test_select_cap(self):
         picks = select_frames(story(), count=99, max_frames=2)
         self.assertEqual(picks, [(0, 0), (4, 40)])
+
+    def test_select_at(self):
+        picks = select_frames(story(), at=[12, 38], max_frames=10)
+        self.assertEqual(picks, [(1, 10), (4, 40)])
+
+    def test_normalize_ms_index(self):
+        index = [0, 0, 8000, 14000]
+        self.assertEqual(_normalize_index(index, duration=20), [0, 0, 8, 14])
+        index = [0, {"timestamp": 0}, {"timestamp": 8000}]
+        self.assertEqual(_normalize_index(index, duration=10), [0, 0, 8])
 
     def test_invalid_range(self):
         with self.assertRaises(RuntimeError):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -57,12 +58,14 @@ class Main(star.Star):
         lines = [
             f"【视频】{info['title']}（{pack['bvid']}）",
             f"【时长】{info['duration'] // 60} 分 {info['duration'] % 60} 秒；UP 主：{info['owner']}",
-            f"【快照】全片共 {pack['total_frames']} 帧；本次抽 {len(pack['images'])} 帧，时间点（秒）：{times}",
+            f"【分P】{info.get('page_count', 1)} P（本次只取第 1 P / 默认 cid）",
+            f"【快照】共 {pack['total_frames']} 帧，覆盖到约 {pack.get('covered_sec', 0)} 秒；本次抽 {len(pack['images'])} 帧，时间点（秒）：{times}",
         ]
         if mode == "preview":
             lines.append(
                 "【下一步】这是整片概览。如果某一段值得细看，调用 "
-                "`bili_watch_more(bvid, start, end, frames)`；想看全片就 start=0、end=0。"
+                "`bili_watch_more(bvid, start, end, frames)`；已知字幕时间点也可以传 "
+                "`at=\"30,90,150\"`；想看全片就 start=0、end=0。"
             )
             lines.append(
                 "【提示】frames 会被配置里的 max_frames 限制；max_frames=0 表示允许全部快照。"
@@ -101,6 +104,7 @@ class Main(star.Star):
                 initial_frames=initial,
                 max_frames=initial,
                 subtitle_max_chars=self._int_cfg("subtitle_max_chars", 6000, minimum=0),
+                frame_width=self._int_cfg("frame_width", 480, minimum=160),
             )
             self.logger.info(
                 "bili_watch_preview %s: %s/%s frames, subtitle=%s chars",
@@ -120,18 +124,34 @@ class Main(star.Star):
         start: int = 0,
         end: int = 0,
         frames: int = 0,
+        at: str = "",
     ):
-        """在概览之后，对 B 站视频的某个时间段或全片继续抽帧细看。start/end 是秒，end=0 表示到结尾；frames=0 表示用配置里的 max_frames。
+        """在概览之后，对 B 站视频的某个时间段或全片继续抽帧细看。start/end 是秒，end=0 表示到结尾；frames=0 表示用配置里的 max_frames；at 可选，逗号分隔的秒数列表，指定时间点优先。
 
         Args:
             bvid(string): 视频 BV 号，例如 BV1os411H7wm
             start(number): 起始秒数，0 表示开头
             end(number): 结束秒数，0 表示结尾
             frames(number): 本次最多抽几帧，0 表示使用配置上限
+            at(string): 可选，逗号分隔的时间点秒数，例如 "30,90,150"；填了就以它为准，忽略 start/end
         """
+        at_values = []
+        at_text = str(at or "").strip()
+        if at_text:
+            try:
+                at_values = [
+                    float(x)
+                    for x in re.split(r"[,，\s]+", at_text)
+                    if x.strip()
+                ]
+            except ValueError:
+                return self._text_result("at 格式不对：请用逗号分隔的秒数，例如 30,90,150。", True)
+            if not at_values:
+                return self._text_result("at 是空的；要么不传，要么给 30,90,150。", True)
+
         start = max(0, int(start or 0))
         end = max(0, int(end or 0))
-        if end > 0 and end <= start:
+        if not at_values and end > 0 and end <= start:
             return self._text_result("结束时间必须大于开始时间（end=0 表示到结尾）。", True)
         max_frames = self._int_cfg("max_frames", 40, minimum=0)
         requested = int(frames or 0)
@@ -149,6 +169,8 @@ class Main(star.Star):
                 frames=requested,
                 max_frames=max_frames,
                 subtitle_max_chars=self._int_cfg("subtitle_max_chars", 6000, minimum=0),
+                at=at_values or None,
+                frame_width=self._int_cfg("frame_width", 480, minimum=160),
             )
             self.logger.info(
                 "bili_watch_more %s: %s/%s frames, range=%s-%s",

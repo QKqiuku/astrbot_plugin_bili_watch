@@ -33,6 +33,16 @@ It does **not** download the full video and does **not** require `ffmpeg` or `yt
 - **Read-only**: no comments, no dynamics, no account mutations.
 - **Short cache**: storyboard/subtitle cache for 5 minutes per process to reduce duplicate requests and rate-limit risk.
 
+## Relationship to existing Bilibili tools
+
+BiliWatch **only adds two LLM tools**. It does not replace, disable, or modify your existing Bilibili MCP tools:
+
+- Existing `bili_subtitle` still works; BiliWatch also includes subtitles in its preview.
+- Existing `bili_danmaku` still works; BiliWatch does not fetch danmaku, so keep using that tool for danmaku.
+- `bili_comments` / `bili_rank` / `bili_hot_videos` and others are untouched.
+
+Suggested split: **use BiliWatch for visuals, keep the original MCP for danmaku/comments**. Do not hammer the same video with preview + more + danmaku in a short window.
+
 ## Requirements
 
 | Requirement | Required? | Notes |
@@ -109,6 +119,7 @@ AstrBot → Plugins → **BiliWatch**:
 | `initial_frames` | `10` | Frames in the first preview; 6–10 recommended |
 | `max_frames` | `40` | Per-call cap for the closer look; `0` = all frames allowed |
 | `subtitle_max_chars` | `6000` | Max subtitle characters included; `0` = no truncation |
+| `frame_width` | `480` | Output frame width; 160×90 sources become 480×270 |
 | `credential_path` | `D:\bilibili-mcp\bili_credential.json` | Bilibili credential JSON path |
 
 > Returning all frames can mean hundreds of images. Context size, cost, and latency grow quickly. Use `20–40` by default; set `0` only when you explicitly want a full-video pass.
@@ -129,7 +140,7 @@ Say:
 The tool returns:
 
 - title, duration, uploader;
-- total storyboard frames;
+- page count, total storyboard frames, covered seconds;
 - 10 keyframes at their timestamps (images);
 - subtitles (if available);
 - a next-step hint: call `bili_watch_more` for an interesting segment.
@@ -144,6 +155,19 @@ start  = 30
 end    = 120
 frames = 8
 ```
+
+### 2b. Look at exact timestamps
+
+If the subtitles mention exact moments, pass `at` (comma-separated seconds):
+
+> Use `bili_watch_more` on BV1xrnz6gEVD at 30, 90, and 150 seconds, 3 frames.
+
+```text
+bvid = BV1xrnz6gEVD
+at   = "30,90,150"
+```
+
+`at` picks the nearest snapshot for each timestamp and ignores `start/end`.
 
 ### 3. Look at the whole video
 
@@ -179,7 +203,7 @@ flowchart TB
   B --> C[videoshot: 10x10 sprites + timestamps]
   B --> D[player/v2: subtitles]
   C --> E[Pick 10 frames evenly]
-  E --> F[Crop 160x90, upscale 2x]
+  E --> F[Crop and resize to 480×270]
   D --> G[Text: metadata + subtitles + next-step hint]
   F --> H[CallToolResult: TextContent + ImageContent...]
   G --> H
@@ -190,8 +214,9 @@ flowchart TB
   K --> C
 ```
 
-- Bilibili `videoshot` samples frames based on visual changes, not every frame; source frames are about 160×90.
-- The plugin upscales each frame 2× to 320×180, crops it to JPEG, and returns it as `ImageContent`.
+- Bilibili `videoshot` samples frames based on visual changes, not every frame; source frames may be 160×90 or 480×270.
+- The plugin crops each frame and resizes it to `frame_width` (480 by default, i.e. 480×270), encodes JPEG, and returns it as `ImageContent`.
+- If the storyboard `index` is empty, the plugin reads `pvdata` (big-endian uint16 seconds) as a fallback; timestamps support seconds and milliseconds.
 - AstrBot's local tool executor caches `ImageContent` and exposes it to the vision model.
 - Subtitles come from `x/player/v2` and require a Bilibili cookie.
 - Storyboard and subtitles are cached for 5 minutes to reduce duplicate requests.
