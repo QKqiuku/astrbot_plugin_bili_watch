@@ -2,8 +2,8 @@
   "credential_path": {
     "description": "B站凭证文件路径（bili_credential.json）",
     "type": "string",
-    "default": "D:\\bilibili-mcp\\bili_credential.json",
-    "hint": "用于读取 AI 字幕和更稳定的快照请求；没有凭证时仍尝试匿名访问。"
+    "default": "bili_credential.json",
+    "hint": "相对路径会放在 data/plugin_data/astrbot_plugin_bili_watch/ 下；也可以填绝对路径。留空同样使用该目录。没有凭证时仍尝试匿名访问。"
   },
   "initial_frames": {
     "description": "第一遍概览抽多少帧",

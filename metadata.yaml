@@ -9,7 +9,7 @@ desc: |
   - 抽帧上限可配置，设为 0 时允许返回视频全部快照
   - 返回 `CallToolResult` 图片，交给支持视觉的聊天模型
   - 只读取 B 站公开数据，不写评论、不操作账号
-version: 0.1.0
+version: 0.1.1
 author: QKqiuku
 repo: https://github.com/QKqiuku/astrbot_plugin_bili_watch
 astrbot_version: ">=4.22,<5"

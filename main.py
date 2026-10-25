@@ -1,21 +1,15 @@
 from __future__ import annotations
 
 import base64
-import os
 import re
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pathlib import Path
 
 from mcp.types import CallToolResult, ImageContent, TextContent
 
 from astrbot.api import star
 from astrbot.api.event import AstrMessageEvent, filter
 
-try:
-    from .bili_core import prepare
-except ImportError:
-    from bili_core import prepare
+from .bili_core import prepare
 
 
 class Main(star.Star):
@@ -32,6 +26,20 @@ class Main(star.Star):
         except (TypeError, ValueError):
             value = default
         return max(minimum, value)
+
+    def _credential_path(self) -> str:
+        configured = str(self._cfg("credential_path", "") or "").strip()
+        path = Path(configured).expanduser() if configured else Path("bili_credential.json")
+        if path.is_absolute():
+            return str(path)
+        try:
+            return str(
+                (star.StarTools.get_data_dir("astrbot_plugin_bili_watch") / path).resolve()
+            )
+        except Exception:
+            return str(
+                Path("data/plugin_data/astrbot_plugin_bili_watch") / path
+            )
 
     def _text_result(self, text: str, is_error: bool = False) -> CallToolResult:
         return CallToolResult(
@@ -97,9 +105,7 @@ class Main(star.Star):
         try:
             pack = await prepare(
                 bvid_raw=bvid,
-                credential_path=str(
-                    self._cfg("credential_path", r"D:\bilibili-mcp\bili_credential.json")
-                ),
+                credential_path=self._credential_path(),
                 initial=True,
                 initial_frames=initial,
                 max_frames=initial,
@@ -160,9 +166,7 @@ class Main(star.Star):
         try:
             pack = await prepare(
                 bvid_raw=bvid,
-                credential_path=str(
-                    self._cfg("credential_path", r"D:\bilibili-mcp\bili_credential.json")
-                ),
+                credential_path=self._credential_path(),
                 initial=False,
                 start=start,
                 end=end,

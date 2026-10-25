@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1 — 2026-10-26
+
+- `credential_path` 默认值改为 `bili_credential.json`，相对路径解析到 `data/plugin_data/astrbot_plugin_bili_watch/`，不再写死 Windows 绝对路径。
+- 去掉 `sys.path.insert`，`main.py` 使用纯相对导入 `from .bili_core import prepare`。
+- 保留绝对路径配置兼容：老用户填 `D:\...` 仍然有效。
+
 ## 0.1.0 — 2026-10-25
 
 - 首个版本。

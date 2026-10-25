@@ -58,7 +58,7 @@ Suggested split: **use BiliWatch for visuals, keep the original MCP for danmaku/
 
 ### Cookie file format
 
-Default: `D:\bilibili-mcp\bili_credential.json` (configurable):
+Default: `data/plugin_data/astrbot_plugin_bili_watch/bili_credential.json` (relative, works on Linux/Windows; absolute paths are also accepted):
 
 ```json
 {
@@ -120,7 +120,7 @@ AstrBot → Plugins → **BiliWatch**:
 | `max_frames` | `40` | Per-call cap for the closer look; `0` = all frames allowed |
 | `subtitle_max_chars` | `6000` | Max subtitle characters included; `0` = no truncation |
 | `frame_width` | `480` | Output frame width; 160×90 sources become 480×270 |
-| `credential_path` | `D:\bilibili-mcp\bili_credential.json` | Bilibili credential JSON path |
+| `credential_path` | `bili_credential.json` | Relative paths resolve under `data/plugin_data/astrbot_plugin_bili_watch/`; absolute paths also work |
 
 > Returning all frames can mean hundreds of images. Context size, cost, and latency grow quickly. Use `20–40` by default; set `0` only when you explicitly want a full-video pass.
 

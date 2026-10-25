@@ -58,7 +58,7 @@ BiliWatch **只新增两个 LLM 工具**，不会替换、禁用或修改你已�
 
 ### Cookie 文件格式
 
-默认读取 `D:\bilibili-mcp\bili_credential.json`，也可以在插件配置里改路径：
+默认读取 `data/plugin_data/astrbot_plugin_bili_watch/bili_credential.json`（相对路径，Linux / Windows 通用），也可以在插件配置里填绝对路径：
 
 ```json
 {
@@ -120,7 +120,7 @@ astrbot_plugin_bili_watch/
 | `max_frames` | `40` | 第二次续看单次上限；`0` = 允许全部快照 |
 | `subtitle_max_chars` | `6000` | 字幕最多带多少字符；`0` = 不截断 |
 | `frame_width` | `480` | 画面帧输出宽度；源图 160×90 会缩放到 480×270 |
-| `credential_path` | `D:\bilibili-mcp\bili_credential.json` | B 站凭证路径 |
+| `credential_path` | `bili_credential.json` | 相对路径会放在 `data/plugin_data/astrbot_plugin_bili_watch/`；也可填绝对路径 |
 
 > 全量可能有一两百张甚至更多图片，视觉模型的上下文、费用和延迟都会明显增加。日常建议 `max_frames=20–40`；只有明确“整片过一遍”时才设 `0`。
 
