@@ -1,0 +1,25 @@
+name: astrbot_plugin_bili_watch
+display_name: BiliWatch · B站分阶段看视频
+short_desc: 先预览 10 帧+字幕，再由模型自己选择片段或全片继续抽帧的 B 站视频理解工具
+desc: 
+  为Astrbot机器人提供一种新的Bilibili视频观看方式，结合了B站自带视频快照+抽帧截取视频的方法
+  让 AstrBot 先看 B 站视频的 10 张关键帧和字幕，再由模型决定要不要对某个时间段或全片继续抽帧。
+  - 两阶段工具：`bili_watch_preview` / `bili_watch_more`
+  - 不下载整段视频，不依赖 ffmpeg / yt-dlp
+  - 抽帧上限可配置，设为 0 时允许返回视频全部快照
+  - 返回 `CallToolResult` 图片，交给支持视觉的聊天模型
+  - 只读取 B 站公开数据，不写评论、不操作账号
+version: 0.1.0
+author: QKqiuku
+repo: https://github.com/QKqiuku/astrbot_plugin_bili_watch
+astrbot_version: ">=4.22,<5"
+support_platforms:
+  - aiocqhttp
+tags:
+  - bilibili
+  - video
+  - vision
+  - multimodal
+  - llm-tool
+logo_path: logo.png
+social_link: https://github.com/QKqiuku

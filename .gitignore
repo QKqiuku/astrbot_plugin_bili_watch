@@ -1,0 +1,20 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Build / packaging
+dist/
+build/
+*.egg-info/
+
+# Local tests / media
+tests/_tmp/
+*.log
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

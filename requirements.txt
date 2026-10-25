@@ -1,0 +1,1 @@
+# AstrBot 自带 aiohttp / Pillow / mcp，无额外依赖

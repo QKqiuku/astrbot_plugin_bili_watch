@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+import base64
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from mcp.types import CallToolResult, ImageContent, TextContent
+
+from astrbot.api import star
+from astrbot.api.event import AstrMessageEvent, filter
+
+try:
+    from .bili_core import prepare
+except ImportError:
+    from bili_core import prepare
+
+
+class Main(star.Star):
+    def __init__(self, context: star.Context, config: dict | None = None):
+        super().__init__(context, config)
+        self.config = config or {}
+
+    def _cfg(self, key: str, default):
+        return (self.config or {}).get(key, default)
+
+    def _int_cfg(self, key: str, default: int, minimum: int = 0) -> int:
+        try:
+            value = int(self._cfg(key, default))
+        except (TypeError, ValueError):
+            value = default
+        return max(minimum, value)
+
+    def _text_result(self, text: str, is_error: bool = False) -> CallToolResult:
+        return CallToolResult(
+            content=[TextContent(type="text", text=text)],
+            isError=is_error,
+        )
+
+    def _result(self, text: str, images: list[bytes]) -> CallToolResult:
+        content = [TextContent(type="text", text=text)]
+        for data in images:
+            content.append(
+                ImageContent(
+                    type="image",
+                    data=base64.b64encode(data).decode("ascii"),
+                    mimeType="image/jpeg",
+                )
+            )
+        return CallToolResult(content=content)
+
+    def _summary(self, pack: dict, mode: str) -> str:
+        info = pack["info"]
+        picks = pack["picks"]
+        times = [t for _, t in picks]
+        lines = [
+            f"【视频】{info['title']}（{pack['bvid']}）",
+            f"【时长】{info['duration'] // 60} 分 {info['duration'] % 60} 秒；UP 主：{info['owner']}",
+            f"【快照】全片共 {pack['total_frames']} 帧；本次抽 {len(pack['images'])} 帧，时间点（秒）：{times}",
+        ]
+        if mode == "preview":
+            lines.append(
+                "【下一步】这是整片概览。如果某一段值得细看，调用 "
+                "`bili_watch_more(bvid, start, end, frames)`；想看全片就 start=0、end=0。"
+            )
+            lines.append(
+                "【提示】frames 会被配置里的 max_frames 限制；max_frames=0 表示允许全部快照。"
+            )
+        else:
+            lines.append(
+                f"【续看】本次只看 {times[0] if times else 0}–{times[-1] if times else 0} 秒；"
+                "如果要更细，缩小 start/end 再抽一次。"
+            )
+        if pack["subtitle"]:
+            lines.append("【字幕】\n" + pack["subtitle"])
+        else:
+            lines.append("【字幕】没有获取到字幕（可能没有 AI 字幕，或 B 站登录态无效）。")
+        if mode == "more" and len(pack["images"]) >= pack["total_frames"]:
+            lines.append("【注意】这次已经抽了全量快照，图片很多，阅读和费用都会明显增加。")
+        return "\n".join(lines)
+
+    @filter.llm_tool(name="bili_watch_preview")
+    async def bili_watch_preview(self, event: AstrMessageEvent, bvid: str):
+        """先看一个 B 站视频的整体画面和字幕：抽固定数量的关键帧（默认 10 张），并带上字幕，用于判断值不值得细看。
+
+        Args:
+            bvid(string): 视频 BV 号，例如 BV1os411H7wm
+        """
+        initial = self._int_cfg("initial_frames", 10, minimum=1)
+        max_frames = self._int_cfg("max_frames", 40, minimum=0)
+        if max_frames > 0:
+            initial = min(initial, max_frames)
+        try:
+            pack = await prepare(
+                bvid_raw=bvid,
+                credential_path=str(
+                    self._cfg("credential_path", r"D:\bilibili-mcp\bili_credential.json")
+                ),
+                initial=True,
+                initial_frames=initial,
+                max_frames=initial,
+                subtitle_max_chars=self._int_cfg("subtitle_max_chars", 6000, minimum=0),
+            )
+            self.logger.info(
+                "bili_watch_preview %s: %s/%s frames, subtitle=%s chars",
+                pack["bvid"], len(pack["images"]), pack["total_frames"],
+                len(pack["subtitle"]),
+            )
+            return self._result(self._summary(pack, "preview"), pack["images"])
+        except Exception as e:
+            self.logger.warning(f"bili_watch_preview 失败: {e}")
+            return self._text_result(f"看视频概览失败：{e}", is_error=True)
+
+    @filter.llm_tool(name="bili_watch_more")
+    async def bili_watch_more(
+        self,
+        event: AstrMessageEvent,
+        bvid: str,
+        start: int = 0,
+        end: int = 0,
+        frames: int = 0,
+    ):
+        """在概览之后，对 B 站视频的某个时间段或全片继续抽帧细看。start/end 是秒，end=0 表示到结尾；frames=0 表示用配置里的 max_frames。
+
+        Args:
+            bvid(string): 视频 BV 号，例如 BV1os411H7wm
+            start(number): 起始秒数，0 表示开头
+            end(number): 结束秒数，0 表示结尾
+            frames(number): 本次最多抽几帧，0 表示使用配置上限
+        """
+        start = max(0, int(start or 0))
+        end = max(0, int(end or 0))
+        if end > 0 and end <= start:
+            return self._text_result("结束时间必须大于开始时间（end=0 表示到结尾）。", True)
+        max_frames = self._int_cfg("max_frames", 40, minimum=0)
+        requested = int(frames or 0)
+        if requested <= 0:
+            requested = max_frames if max_frames > 0 else 0
+        try:
+            pack = await prepare(
+                bvid_raw=bvid,
+                credential_path=str(
+                    self._cfg("credential_path", r"D:\bilibili-mcp\bili_credential.json")
+                ),
+                initial=False,
+                start=start,
+                end=end,
+                frames=requested,
+                max_frames=max_frames,
+                subtitle_max_chars=self._int_cfg("subtitle_max_chars", 6000, minimum=0),
+            )
+            self.logger.info(
+                "bili_watch_more %s: %s/%s frames, range=%s-%s",
+                pack["bvid"], len(pack["images"]), pack["total_frames"], start, end,
+            )
+            return self._result(self._summary(pack, "more"), pack["images"])
+        except Exception as e:
+            self.logger.warning(f"bili_watch_more 失败: {e}")
+            return self._text_result(f"继续看视频失败：{e}", is_error=True)

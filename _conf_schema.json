@@ -1,0 +1,26 @@
+{
+  "credential_path": {
+    "description": "B站凭证文件路径（bili_credential.json）",
+    "type": "string",
+    "default": "D:\\bilibili-mcp\\bili_credential.json",
+    "hint": "用于读取 AI 字幕和更稳定的快照请求；没有凭证时仍尝试匿名访问。"
+  },
+  "initial_frames": {
+    "description": "第一遍概览抽多少帧",
+    "type": "int",
+    "default": 10,
+    "hint": "建议 6–10。抽太多会占上下文，但概览更全。"
+  },
+  "max_frames": {
+    "description": "第二遍续看单次最多抽多少帧",
+    "type": "int",
+    "default": 40,
+    "hint": "0 = 不限制，允许返回视频全部快照（可能非常慢、贵，甚至触发模型图片数量限制）。建议 20–60。"
+  },
+  "subtitle_max_chars": {
+    "description": "字幕最多带多少字符",
+    "type": "int",
+    "default": 6000,
+    "hint": "太长会占用上下文；0 表示不截断。"
+  }
+}
