@@ -71,7 +71,7 @@ Search **BiliWatch** in the AstrBot plugin marketplace and install it.
 
 ```bash
 cd ~/.astrbot/data/plugins
-git clone https://github.com/your-name/astrbot_plugin_bili_watch.git
+git clone https://github.com/QKqiuku/astrbot_plugin_bili_watch.git
 ```
 
 Default Windows path:
@@ -286,6 +286,7 @@ Project layout:
 
 ```text
 astrbot_plugin_bili_watch/
+├── __init__.py          # Python package marker; can be empty
 ├── main.py              # AstrBot Star + two LLM tools
 ├── bili_core.py         # Bilibili API, frame selection, cropping, subtitles
 ├── _conf_schema.json    # Plugin configuration

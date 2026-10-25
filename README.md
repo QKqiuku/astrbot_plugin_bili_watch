@@ -71,7 +71,7 @@ BiliWatch 把“看视频”拆成两次工具调用：
 
 ```bash
 cd ~/.astrbot/data/plugins
-git clone https://github.com/your-name/astrbot_plugin_bili_watch.git
+git clone https://github.com/QKqiuku/astrbot_plugin_bili_watch.git
 ```
 
 Windows 默认目录：
@@ -292,6 +292,7 @@ asyncio.run(main())
 
 ```text
 astrbot_plugin_bili_watch/
+├── __init__.py          # Python 包标记，可以为空
 ├── main.py              # AstrBot Star、两个 LLM 工具
 ├── bili_core.py         # B 站 API、选帧、裁剪、字幕
 ├── _conf_schema.json    # 插件配置
