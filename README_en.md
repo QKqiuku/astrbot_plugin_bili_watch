@@ -298,32 +298,10 @@ astrbot_plugin_bili_watch/
 └── CHANGELOG.md
 ```
 
-## Publishing to GitHub / AstrBot Marketplace
-
-1. Create a GitHub repository, e.g. `astrbot_plugin_bili_watch`.
-2. Edit `metadata.yaml`:
-   - set `repo` to your GitHub URL;
-   - set `author` / `social_link` to your name and homepage.
-3. Push the code:
-
-   ```bash
-   git init
-   git add .
-   git commit -m "feat: initial BiliWatch plugin"
-   git branch -M main
-   git remote add origin https://github.com/<your-name>/astrbot_plugin_bili_watch.git
-   git push -u origin main
-   ```
-
-4. Ensure the release zip is **under 16MB** and excludes `.git`, `__pycache__`, and test outputs.
-5. Open the [AstrBot plugin publishing page](https://cloud.astrbot.app/publish), sign in to AstrBot Cloud, and submit the repository.
-6. After review, the plugin becomes searchable in the marketplace.
-
-> The `repo` value in `metadata.yaml` is a placeholder. Replace it with your real repository before publishing.
 
 ## License
 
-[MIT](LICENSE) © 2026 汐汐部署
+[MIT](LICENSE) © 2026 QKqiuku
 
 ---
 

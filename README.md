@@ -304,20 +304,6 @@ astrbot_plugin_bili_watch/
 └── CHANGELOG.md
 ```
 
-   ```bash
-   git init
-   git add .
-   git commit -m "feat: initial BiliWatch plugin"
-   git branch -M main
-   git remote add origin https://github.com/<你的名字>/astrbot_plugin_bili_watch.git
-   git push -u origin main
-   ```
-
-4. 确认发布 zip **小于 16MB**，且不包含 `.git`、`__pycache__`、测试产物；
-5. 打开 [AstrBot 插件发布页](https://cloud.astrbot.app/publish)，注册/登录 AstrBot Cloud，提交仓库；
-6. 审核通过后即可在插件市场搜索到。
-
-> `metadata.yaml` 里的 `repo` 现在是占位地址，发布前必须改成你的真实 GitHub 仓库。
 
 ## License
 
