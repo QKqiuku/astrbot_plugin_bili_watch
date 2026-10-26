@@ -29,9 +29,13 @@ BiliWatch 把“看视频”拆成两次工具调用：
 - **轻依赖**：只用 AstrBot 自带的 `aiohttp` / `Pillow` / `mcp`；不需要 ffmpeg、yt-dlp、浏览器。
 - **不下载视频**：直接使用 B 站官方 `videoshot` 快照拼版，快速、省磁盘。
 - **字幕可选**：配置 B 站 Cookie 后读取中文 / AI 字幕；没有字幕也能看画面。
+- **smart 选帧**：优先靠近字幕 cue / 对话节点，再补时间覆盖；不再纯等间隔。
+- **黑帧过滤**：接近全黑的镜头会尝试前后 1–3 个快照，避免“抽到黑屏”。
+- **字幕对齐**：返回字幕 cue 数量；模型引用时间点时知道对应哪句台词。
 - **上限可配**：`max_frames=0` 允许全部快照；也可以限制 20 / 40 / 60 张。
 - **只读安全**：不评论、不发动态、不操作 B 站账号。
 - **短缓存**：同一进程内快照/字幕缓存 5 分钟，减少连续 preview → more 的风控概率。
+- **不假装有声音**：本插件听不到 BGM / 语气；需要声音请用独立 ASR 方案。
 
 ## 和现有 B 站工具的关系
 
@@ -119,6 +123,8 @@ astrbot_plugin_bili_watch/
 | `initial_frames` | `10` | 第一次概览抽多少帧；建议 6–10 |
 | `max_frames` | `40` | 第二次续看单次上限；`0` = 允许全部快照 |
 | `subtitle_max_chars` | `6000` | 字幕最多带多少字符；`0` = 不截断 |
+| `selection_mode` | `smart` | `smart` = 字幕节点 + 时间覆盖；`even` = 纯等间隔 |
+| `avoid_dark` | `true` | 黑帧自动换相邻快照；全黑段才保留原帧 |
 | `frame_width` | `480` | 画面帧输出宽度；源图 160×90 会缩放到 480×270 |
 | `credential_path` | `bili_credential.json` | 相对路径会放在 `data/plugin_data/astrbot_plugin_bili_watch/`；也可填绝对路径 |
 
@@ -206,8 +212,9 @@ flowchart TB
   A[模型调用 bili_watch_preview] --> B[view API: 标题/时长/cid]
   B --> C[videoshot: 10x10 拼版 + 时间表]
   B --> D[player/v2: 字幕]
-  C --> E[按时间均匀选 10 帧]
-  E --> F[从拼版裁切，缩放到 480×270]
+  D --> C
+  C --> E[smart：字幕节点 + 时间覆盖选 10 帧]
+  E --> F[裁切/缩放；黑帧换邻帧]
   D --> G[文本：元信息 + 字幕 + 下一步提示]
   F --> H[CallToolResult: TextContent + ImageContent...]
   G --> H
@@ -222,6 +229,7 @@ flowchart TB
 
 - B 站 `videoshot` 按画面变化取帧，不是逐帧视频；每帧源图可能是 160×90 或 480×270。
 - 插件把每帧裁切并缩放到 `frame_width`（默认 480 宽，即 480×270），编码成 JPEG 放进 `CallToolResult` 的 `ImageContent` 里。
+- smart 选帧会优先靠近字幕 cue 的中点，再补一层全片覆盖；裁切时检测亮度和画面签名，黑帧/几乎重复的帧会尝试前后 1–3 个快照。
 - 快照 `index` 为空时会读 `pvdata`（大端 uint16 秒数）兜底；时间戳兼容秒/毫秒。
 - AstrBot 的本地工具执行器会缓存 `ImageContent`，并把它交给视觉模型。
 - 字幕来自 `x/player/v2` 的 `subtitle_url`，需要 B 站 Cookie。
@@ -231,6 +239,8 @@ flowchart TB
 
 - **低分辨率**：快照源图 160×90，放大后也读不清屏幕小字；适合看场景、人物、动作，不适合 OCR。
 - **不是逐帧**：B 站快照按画面变化抽样，快速动作、连续台词可能漏。
+- **没有声音**：听不到 BGM、语气、音效；字幕只能覆盖“说了什么”，笑点和氛围仍可能靠猜。要听声音需要独立 ASR/Whisper 链路。
+- **smart 依赖字幕**：没有字幕时只能退回时间覆盖，选帧不会比等间隔聪明多少。
 - **不是所有视频都有快照**：没有快照的视频会返回错误，可回退字幕。
 - **不是所有视频都有字幕**：没有 AI 字幕/CC，或 Cookie 失效时字幕为空。
 - **只支持 BV / 含 BV 的链接**：暂不解析 b23.tv 短链和 av 号。

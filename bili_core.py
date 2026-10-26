@@ -8,6 +8,7 @@ from pathlib import Path
 
 import aiohttp
 from PIL import Image as PILImage
+from PIL import ImageStat
 
 HEADERS = {
     "User-Agent": (
@@ -24,7 +25,7 @@ _HTTP_TIMEOUT = aiohttp.ClientTimeout(total=30)
 _CACHE_TTL = 300.0
 _CACHE_MAX = 50
 _STORY_CACHE: dict[tuple[str, int], tuple[float, dict]] = {}
-_SUB_CACHE: dict[tuple[str, int, int], tuple[float, str]] = {}
+_SUB_CACHE: dict[tuple[str, int, int], tuple[float, dict]] = {}
 
 
 def extract_bvid(raw: str) -> str:
@@ -207,14 +208,15 @@ async def fetch_storyboard(
     return story
 
 
-async def fetch_subtitle(
+async def fetch_subtitle_data(
     session: aiohttp.ClientSession,
     bvid: str,
     cid: int,
     max_chars: int = 6000,
-) -> str:
+) -> dict:
+    """返回 {"text": 带时间戳字幕, "cues": [{start,end,text}, ...]}。"""
     if not cid:
-        return ""
+        return {"text": "", "cues": []}
     key = (bvid, int(cid), int(max_chars or 0))
     cached = _SUB_CACHE.get(key)
     if cached and time.monotonic() - cached[0] < _CACHE_TTL:
@@ -234,7 +236,7 @@ async def fetch_subtitle(
                 {"bvid": bvid, "cid": cid},
             )
         if payload.get("code") != 0:
-            return ""
+            return {"text": "", "cues": []}
         subs = ((payload.get("data") or {}).get("subtitle") or {}).get("subtitles") or []
         chosen = None
         for s in subs:
@@ -244,25 +246,44 @@ async def fetch_subtitle(
         if chosen is None and subs:
             chosen = subs[0]
         if not chosen or not chosen.get("subtitle_url"):
-            return ""
+            return {"text": "", "cues": []}
         url = _sprite_url(str(chosen["subtitle_url"]))
         data = await _get_json(session, url)
         lines = []
+        cues = []
         for item in data.get("body") or []:
             text = (item.get("content") or "").strip()
             if not text:
                 continue
             try:
-                sec = int(float(item.get("from") or 0))
-            except Exception:
-                sec = 0
+                start = max(0.0, float(item.get("from") or 0))
+            except (TypeError, ValueError):
+                start = 0.0
+            try:
+                end = max(start, float(item.get("to") or start))
+            except (TypeError, ValueError):
+                end = start
+            sec = int(start)
             lines.append(f"[{sec // 60:02d}:{sec % 60:02d}] {text}")
+            cues.append({"start": start, "end": end, "text": text})
         out = "\n".join(lines)
         if max_chars > 0 and len(out) > max_chars:
             out = out[:max_chars] + "\n…（字幕过长已截断）"
-        return out
+        result = {"text": out, "cues": cues}
+        _cache_set(_SUB_CACHE, key, result)
+        return result
     except Exception:
-        return ""
+        return {"text": "", "cues": []}
+
+
+async def fetch_subtitle(
+    session: aiohttp.ClientSession,
+    bvid: str,
+    cid: int,
+    max_chars: int = 6000,
+) -> str:
+    data = await fetch_subtitle_data(session, bvid, cid, max_chars=max_chars)
+    return data["text"]
 
 
 def _frame_times(story: dict) -> list[int]:
@@ -344,17 +365,121 @@ def select_frames(
     ]
 
 
+def select_smart_frames(
+    story: dict,
+    cues: list[dict] | None,
+    count: int = 10,
+    max_frames: int = 40,
+    start: int = 0,
+    end: int = 0,
+) -> list[tuple[int, int]]:
+    """按字幕节点 + 时间覆盖选帧；无字幕时退回均匀选帧。"""
+    times = _frame_times(story)
+    if not times:
+        raise RuntimeError("快照时间表为空")
+    start = max(0, int(start or 0))
+    end = max(0, int(end or 0))
+    if end > 0 and end <= start:
+        raise RuntimeError("结束时间必须大于开始时间（end=0 表示到结尾）")
+    candidates = [
+        (n, t) for n, t in enumerate(times)
+        if t >= start and (end <= 0 or t <= end)
+    ]
+    if not candidates:
+        raise RuntimeError(f"在 {start}–{end or '结尾'} 秒内没有可用快照")
+
+    cap = max(0, int(max_frames or 0))
+    requested = int(count or 0)
+    if requested <= 0:
+        requested = cap if cap > 0 else len(candidates)
+    if cap > 0:
+        requested = min(requested, cap)
+    requested = max(1, min(requested, len(candidates)))
+    if requested >= len(candidates):
+        return candidates
+    if requested == 1:
+        return [candidates[len(candidates) // 2]]
+
+    lo, hi = candidates[0][1], candidates[-1][1]
+    targets: list[float] = []
+    valid_cues = []
+    for cue in cues or []:
+        try:
+            cs = max(0.0, float(cue.get("start") or 0))
+            ce = max(cs, float(cue.get("end") or cs))
+        except (TypeError, ValueError):
+            continue
+        mid = (cs + ce) / 2
+        if lo <= mid <= hi:
+            valid_cues.append(mid)
+    if valid_cues:
+        # 不按“字幕最多”堆在一起，按字幕顺序均匀取样
+        step = max(1, len(valid_cues) // (requested * 2))
+        targets.extend(valid_cues[::step])
+
+    # 再补一层时间覆盖，避免字幕只集中在前半段
+    if requested > 1:
+        targets.extend(
+            lo + (hi - lo) * i / (requested - 1)
+            for i in range(requested)
+        )
+
+    picked: list[tuple[int, int]] = []
+    seen: set[int] = set()
+    for target in targets:
+        nearest = min(candidates, key=lambda e: abs(e[1] - target))
+        if nearest[0] in seen:
+            continue
+        seen.add(nearest[0])
+        picked.append(nearest)
+        if len(picked) >= requested:
+            break
+    picked.sort(key=lambda e: e[1])
+
+    if len(picked) < requested:
+        for item in candidates:
+            if item[0] in seen:
+                continue
+            seen.add(item[0])
+            picked.append(item)
+            if len(picked) >= requested:
+                break
+        picked.sort(key=lambda e: e[1])
+    return picked[:requested]
+
+
+def _frame_quality(frame: PILImage.Image) -> tuple[float, float]:
+    gray = frame.convert("L")
+    stat = ImageStat.Stat(gray)
+    return float(stat.mean[0]), float(stat.stddev[0])
+
+
+def _frame_signature(frame: PILImage.Image) -> tuple[int, ...]:
+    tiny = frame.convert("L").resize((8, 8), PILImage.Resampling.BILINEAR)
+    pixels = list(tiny.tobytes())
+    avg = sum(pixels) / max(1, len(pixels))
+    return tuple(1 if p >= avg else 0 for p in pixels)
+
+
+def _signature_distance(a: tuple[int, ...], b: tuple[int, ...]) -> int:
+    return sum(x != y for x, y in zip(a, b))
+
+
 async def crop_frames(
     session: aiohttp.ClientSession,
     story: dict,
     picks: list[tuple[int, int]],
     width: int = 480,
-) -> list[bytes]:
+    avoid_dark: bool = True,
+    avoid_similar: bool = True,
+) -> tuple[list[bytes], list[tuple[int, int]]]:
     x_len = story["x_len"]
     y_len = story["y_len"]
     y_size = story["y_size"]
     x_size = story["x_size"]
     per_sprite = x_len * y_len
+    times = _frame_times(story)
+    total = len(times)
     sprite_indices = sorted(
         {
             n // per_sprite
@@ -364,27 +489,34 @@ async def crop_frames(
     )
 
     sem = asyncio.Semaphore(3)
+    sprite_cache: dict[int, bytes] = {}
 
-    async def fetch_sprite(sprite_idx: int):
+    async def fetch_sprite(sprite_idx: int) -> bytes | None:
+        if sprite_idx in sprite_cache:
+            return sprite_cache[sprite_idx]
+        if sprite_idx < 0 or sprite_idx >= len(story["images"]):
+            return None
         async with sem:
             async with session.get(
                 _sprite_url(story["images"][sprite_idx]),
                 timeout=_HTTP_TIMEOUT,
             ) as resp:
                 resp.raise_for_status()
-                return sprite_idx, await resp.read()
+                data = await resp.read()
+        sprite_cache[sprite_idx] = data
+        return data
 
-    downloaded = await asyncio.gather(*(fetch_sprite(i) for i in sprite_indices))
-    sprite_cache = dict(downloaded)
-
-    out: list[bytes] = []
-    for n, _t in picks:
-        sprite_idx = n // per_sprite
-        if sprite_idx not in sprite_cache:
+    downloaded = await asyncio.gather(
+        *(fetch_sprite(i) for i in sprite_indices), return_exceptions=True
+    )
+    for item in downloaded:
+        if isinstance(item, Exception):
             continue
+
+    def cut(n: int, data: bytes) -> PILImage.Image:
         pos = n % per_sprite
         row, col = divmod(pos, x_len)
-        sprite = PILImage.open(io.BytesIO(sprite_cache[sprite_idx])).convert("RGB")
+        sprite = PILImage.open(io.BytesIO(data)).convert("RGB")
         box = (
             col * x_size,
             row * y_size,
@@ -399,10 +531,71 @@ async def crop_frames(
                 (target_w, max(1, round(frame.height * ratio))),
                 PILImage.Resampling.LANCZOS,
             )
+        return frame
+
+    out: list[bytes] = []
+    used: list[tuple[int, int]] = []
+    seen: set[int] = set()
+    previous_sig: tuple[int, ...] | None = None
+
+    for n, t in picks:
+        # 允许在选中帧附近换一张：黑帧 → 邻帧；和上一张太像 → 邻帧
+        candidates = [n]
+        if avoid_dark or avoid_similar:
+            for delta in (1, -1, 2, -2, 3, -3):
+                candidates.append(n + delta)
+
+        chosen_n = n
+        chosen_frame = None
+        chosen_data = None
+        for cand in candidates:
+            if cand < 0 or cand >= total or cand in seen:
+                continue
+            sprite_idx = cand // per_sprite
+            data = await fetch_sprite(sprite_idx)
+            if data is None:
+                continue
+            try:
+                frame = cut(cand, data)
+            except Exception:
+                continue
+            mean, std = _frame_quality(frame)
+            if avoid_dark and mean < 12 and std < 8:
+                continue
+            sig = _frame_signature(frame)
+            if (
+                avoid_similar
+                and previous_sig is not None
+                and _signature_distance(previous_sig, sig) < 3
+            ):
+                continue
+            chosen_n, chosen_frame, chosen_data = cand, frame, data
+            break
+
+        if chosen_frame is None:
+            # 全都黑/太像：宁可保留原来的帧，也不静默丢图
+            for cand in candidates:
+                if cand < 0 or cand >= total or cand in seen:
+                    continue
+                data = await fetch_sprite(cand // per_sprite)
+                if data is None:
+                    continue
+                try:
+                    chosen_frame = cut(cand, data)
+                    chosen_n = cand
+                    break
+                except Exception:
+                    continue
+        if chosen_frame is None:
+            continue
+
+        seen.add(chosen_n)
+        used.append((chosen_n, int(times[chosen_n]) if chosen_n < total else int(t)))
+        previous_sig = _frame_signature(chosen_frame)
         buf = io.BytesIO()
-        frame.save(buf, format="JPEG", quality=88)
+        chosen_frame.save(buf, format="JPEG", quality=88)
         out.append(buf.getvalue())
-    return out
+    return out, used
 
 
 async def prepare(
@@ -417,12 +610,15 @@ async def prepare(
     subtitle_max_chars: int = 6000,
     at: list[float] | None = None,
     frame_width: int = 480,
+    selection_mode: str = "smart",
+    avoid_dark: bool = True,
 ) -> dict:
     bvid = extract_bvid(bvid_raw)
     cred = load_credential(credential_path)
     max_frames = max(0, int(max_frames or 0))
     subtitle_max_chars = max(0, int(subtitle_max_chars or 0))
     frame_width = max(0, min(int(frame_width or 480), 960))
+    smart = str(selection_mode or "smart").lower() != "even"
 
     async with aiohttp.ClientSession(headers=_headers(cred)) as session:
         info = await fetch_video_info(session, bvid)
@@ -431,39 +627,47 @@ async def prepare(
         total = len(times)
         covered_sec = int(times[-1]) if times else 0
 
+        sub_data = await fetch_subtitle_data(
+            session, bvid, info["cid"], max_chars=subtitle_max_chars
+        )
+        subtitle = sub_data["text"]
+        cues = sub_data["cues"]
+
         if initial:
             count = max(1, int(initial_frames or 10))
             if max_frames > 0:
                 count = min(count, max_frames)
-            picks = select_frames(
-                story,
-                start=0,
-                end=0,
-                count=count,
-                max_frames=count,
+            picks = (
+                select_smart_frames(story, cues, count=count, max_frames=count)
+                if smart
+                else select_frames(story, count=count, max_frames=count)
             )
         elif at:
-            picks = select_frames(
-                story,
-                at=at,
-                max_frames=max_frames,
-            )
+            picks = select_frames(story, at=at, max_frames=max_frames)
         else:
             requested = int(frames or 0)
             if requested <= 0:
                 requested = max_frames if max_frames > 0 else total
-            picks = select_frames(
-                story,
-                start=start,
-                end=end,
-                count=requested,
-                max_frames=max_frames,
+            picks = (
+                select_smart_frames(
+                    story, cues, count=requested, max_frames=max_frames,
+                    start=start, end=end,
+                )
+                if smart
+                else select_frames(
+                    story, start=start, end=end,
+                    count=requested, max_frames=max_frames,
+                )
             )
 
-        subtitle = await fetch_subtitle(
-            session, bvid, info["cid"], max_chars=subtitle_max_chars
+        images, picks = await crop_frames(
+            session,
+            story,
+            picks,
+            width=frame_width,
+            avoid_dark=bool(avoid_dark) and len(picks) < total,
+            avoid_similar=smart and len(picks) < total,
         )
-        images = await crop_frames(session, story, picks, width=frame_width)
 
     return {
         "bvid": bvid,
@@ -473,4 +677,5 @@ async def prepare(
         "picks": picks,
         "images": images,
         "subtitle": subtitle,
+        "cue_count": len(cues),
     }

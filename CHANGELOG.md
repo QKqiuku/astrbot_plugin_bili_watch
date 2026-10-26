@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0 — 2026-10-26
+
+- 新增 `selection_mode=smart`：按字幕 cue 节点 + 时间覆盖选帧，不再纯等间隔。
+- 新增 `avoid_dark`：裁到接近全黑的镜头时，尝试前后 1–3 个快照换一张可看的。
+- 画面签名去重：连续两帧几乎一样时尝试相邻帧，减少重复画面。
+- 字幕对齐：返回 `cue_count`，并在提示里说明选帧会靠近字幕节点。
+- 保留 `selection_mode=even` 作为回退；没有字幕时 smart 自动退回时间覆盖。
+- 新增说明：本插件听不到 BGM/语气，音频理解需要独立 ASR 方案。
+
 ## 0.1.1 — 2026-10-26
 
 - `credential_path` 默认值改为 `bili_credential.json`，相对路径解析到 `data/plugin_data/astrbot_plugin_bili_watch/`，不再写死 Windows 绝对路径。

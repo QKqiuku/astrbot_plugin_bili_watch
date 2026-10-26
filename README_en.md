@@ -29,9 +29,13 @@ It does **not** download the full video and does **not** require `ffmpeg` or `yt
 - **Light dependencies**: only `aiohttp`, `Pillow`, and `mcp`, all bundled with AstrBot.
 - **No video download**: uses Bilibili's official `videoshot` sprites; fast and disk-friendly.
 - **Optional subtitles**: configure a Bilibili cookie to read Chinese / AI subtitles; visual preview still works without it.
+- **Smart frame selection**: prefers frames near subtitle cues, then adds time coverage; no longer purely uniform.
+- **Black-frame filter**: near-black shots are replaced by nearby storyboard frames when possible.
+- **Subtitle alignment**: returns the cue count so the model can relate a timestamp to the matching line.
 - **Configurable cap**: `max_frames=0` allows all frames; 20 / 40 / 60 are practical limits.
 - **Read-only**: no comments, no dynamics, no account mutations.
 - **Short cache**: storyboard/subtitle cache for 5 minutes per process to reduce duplicate requests and rate-limit risk.
+- **No fake audio**: this plugin cannot hear BGM or tone; use a separate ASR pipeline if you need audio.
 
 ## Relationship to existing Bilibili tools
 
@@ -119,6 +123,8 @@ AstrBot → Plugins → **BiliWatch**:
 | `initial_frames` | `10` | Frames in the first preview; 6–10 recommended |
 | `max_frames` | `40` | Per-call cap for the closer look; `0` = all frames allowed |
 | `subtitle_max_chars` | `6000` | Max subtitle characters included; `0` = no truncation |
+| `selection_mode` | `smart` | `smart` = subtitle cues + time coverage; `even` = uniform |
+| `avoid_dark` | `true` | Try nearby frames when a shot is near-black |
 | `frame_width` | `480` | Output frame width; 160×90 sources become 480×270 |
 | `credential_path` | `bili_credential.json` | Relative paths resolve under `data/plugin_data/astrbot_plugin_bili_watch/`; absolute paths also work |
 
@@ -202,8 +208,9 @@ flowchart TB
   A[Model calls bili_watch_preview] --> B[view API: title/duration/cid]
   B --> C[videoshot: 10x10 sprites + timestamps]
   B --> D[player/v2: subtitles]
-  C --> E[Pick 10 frames evenly]
-  E --> F[Crop and resize to 480×270]
+  D --> C
+  C --> E[Smart: subtitle cues + time coverage]
+  E --> F[Crop/resize; replace near-black shots]
   D --> G[Text: metadata + subtitles + next-step hint]
   F --> H[CallToolResult: TextContent + ImageContent...]
   G --> H
@@ -225,6 +232,8 @@ flowchart TB
 
 - **Low resolution**: source frames are 160×90; upscaling cannot recover small on-screen text.
 - **Not every frame**: Bilibili samples by scene change; fast actions may be missed.
+- **No audio**: cannot hear BGM, tone, or sound effects; subtitles only cover what is said. Audio needs a separate ASR/Whisper pipeline.
+- **Smart needs subtitles**: without subtitles, selection falls back to time coverage and is not much smarter than uniform.
 - **No storyboard**: some videos have no snapshot sheet; the tool returns an error.
 - **No subtitles**: some videos have no AI subtitles/CC, or the cookie has expired.
 - **BV only**: BV numbers or links containing a BV number; `b23.tv` short links and `av` IDs are not resolved.

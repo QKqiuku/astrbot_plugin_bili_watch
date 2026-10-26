@@ -68,6 +68,7 @@ class Main(star.Star):
             f"【时长】{info['duration'] // 60} 分 {info['duration'] % 60} 秒；UP 主：{info['owner']}",
             f"【分P】{info.get('page_count', 1)} P（本次只取第 1 P / 默认 cid）",
             f"【快照】共 {pack['total_frames']} 帧，覆盖到约 {pack.get('covered_sec', 0)} 秒；本次抽 {len(pack['images'])} 帧，时间点（秒）：{times}",
+            f"【字幕对齐】{pack.get('cue_count', 0)} 条字幕 cue；smart 模式下会优先靠近对话/关键节点。",
         ]
         if mode == "preview":
             lines.append(
@@ -111,6 +112,8 @@ class Main(star.Star):
                 max_frames=initial,
                 subtitle_max_chars=self._int_cfg("subtitle_max_chars", 6000, minimum=0),
                 frame_width=self._int_cfg("frame_width", 480, minimum=160),
+                selection_mode=str(self._cfg("selection_mode", "smart")),
+                avoid_dark=bool(self._cfg("avoid_dark", True)),
             )
             self.logger.info(
                 "bili_watch_preview %s: %s/%s frames, subtitle=%s chars",
@@ -175,6 +178,8 @@ class Main(star.Star):
                 subtitle_max_chars=self._int_cfg("subtitle_max_chars", 6000, minimum=0),
                 at=at_values or None,
                 frame_width=self._int_cfg("frame_width", 480, minimum=160),
+                selection_mode=str(self._cfg("selection_mode", "smart")),
+                avoid_dark=bool(self._cfg("avoid_dark", True)),
             )
             self.logger.info(
                 "bili_watch_more %s: %s/%s frames, range=%s-%s",

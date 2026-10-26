@@ -28,5 +28,17 @@
     "type": "int",
     "default": 480,
     "hint": "源图可能是 160×90 或 480×270；统一缩放到这个宽度。480 推荐，越大越占上下文。"
+  },
+  "selection_mode": {
+    "description": "选帧策略",
+    "type": "string",
+    "default": "smart",
+    "hint": "smart = 字幕节点 + 时间覆盖（推荐）；even = 纯等间隔。没有字幕时 smart 会自动退回均匀选帧。"
+  },
+  "avoid_dark": {
+    "description": "自动跳过黑帧",
+    "type": "bool",
+    "default": true,
+    "hint": "裁到接近全黑的镜头时尝试前后 1–3 个快照；全黑段才保留原帧。"
   }
 }

@@ -1,8 +1,11 @@
+import io
 import json
 import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+from PIL import Image as PILImage
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -10,9 +13,11 @@ sys.path.insert(0, str(ROOT))
 from bili_core import (  # noqa: E402
     _normalize_index,
     cookie_header,
+    crop_frames,
     extract_bvid,
     load_credential,
     select_frames,
+    select_smart_frames,
 )
 
 
@@ -81,6 +86,74 @@ class BiliWatchCoreTests(unittest.TestCase):
     def test_select_at(self):
         picks = select_frames(story(), at=[12, 38], max_frames=10)
         self.assertEqual(picks, [(1, 10), (4, 40)])
+
+    def test_smart_selection_uses_cues_and_count(self):
+        cues = [
+            {"start": 11, "end": 12, "text": "关键点 A"},
+            {"start": 31, "end": 32, "text": "关键点 B"},
+        ]
+        picks = select_smart_frames(
+            story(), cues, count=3, max_frames=3,
+        )
+        self.assertEqual(len(picks), 3)
+        self.assertEqual(picks, sorted(picks, key=lambda x: x[1]))
+        # 至少有一个选帧落在字幕节点附近（10/30 秒）
+        self.assertTrue(any(abs(t - 10) <= 10 or abs(t - 30) <= 10 for _, t in picks))
+
+    def test_smart_selection_without_cues_still_works(self):
+        picks = select_smart_frames(story(), [], count=5, max_frames=5)
+        self.assertEqual(len(picks), 5)
+        self.assertEqual(picks, sorted(picks, key=lambda x: x[1]))
+
+    def test_crop_frames_avoids_black_tile(self):
+        class Resp:
+            def __init__(self, data):
+                self.data = data
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            def raise_for_status(self):
+                pass
+
+            async def read(self):
+                return self.data
+
+        class Session:
+            def get(self, *args, **kwargs):
+                return Resp(sprite_bytes)
+
+        sheet = PILImage.new("RGB", (320, 90), (0, 0, 0))
+        sheet.paste(PILImage.new("RGB", (160, 90), (240, 240, 240)), (160, 0))
+        buf = io.BytesIO()
+        sheet.save(buf, format="JPEG")
+        sprite_bytes = buf.getvalue()
+
+        frame_story = {
+            "images": ["//fake/sprite.jpg"],
+            "index": [0, 0, 10],
+            "x_len": 2,
+            "y_len": 1,
+            "x_size": 160,
+            "y_size": 90,
+        }
+        import asyncio
+
+        images, used = asyncio.run(
+            crop_frames(
+                Session(),
+                frame_story,
+                [(0, 0)],
+                width=160,
+                avoid_dark=True,
+                avoid_similar=True,
+            )
+        )
+        self.assertEqual(len(images), 1)
+        self.assertEqual(used, [(1, 10)])
 
     def test_normalize_ms_index(self):
         index = [0, 0, 8000, 14000]
