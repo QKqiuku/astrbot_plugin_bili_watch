@@ -102,6 +102,7 @@ async def fetch_video_info(session: aiohttp.ClientSession, bvid: str) -> dict:
     return {
         "title": data.get("title", ""),
         "duration": int(data.get("duration") or 0),
+        "aid": int(data.get("aid") or 0),
         "cid": int(data.get("cid") or 0),
         "desc": (data.get("desc") or "")[:300],
         "owner": (data.get("owner") or {}).get("name", ""),
@@ -212,45 +213,76 @@ async def fetch_subtitle_data(
     session: aiohttp.ClientSession,
     bvid: str,
     cid: int,
-    max_chars: int = 6000,
+    max_chars: int = 0,
+    aid: int = 0,
+    duration: int = 0,
 ) -> dict:
-    """返回 {"text": 带时间戳字幕, "cues": [{start,end,text}, ...]}。"""
+    """返回 {"text": 字幕, "cues": [...], "status": ok|empty|mismatch|error}。
+
+    B站 player/v2 偶发返回别的视频的 subtitle_url；优先走新的
+    /x/v2/subtitle/web/view（按 aid/cid 查），并对 cue 时间跨度做一次校验。
+    """
     if not cid:
-        return {"text": "", "cues": []}
+        return {"text": "", "cues": [], "status": "empty"}
     key = (bvid, int(cid), int(max_chars or 0))
     cached = _SUB_CACHE.get(key)
     if cached and time.monotonic() - cached[0] < _CACHE_TTL:
         return cached[1]
+
+    async def subs_from(url: str, params: dict, tries: int = 2) -> list:
+        for attempt in range(tries):
+            try:
+                payload = await _get_json(session, url, params)
+                if payload.get("code") == 0:
+                    return ((payload.get("data") or {}).get("subtitle") or {}).get(
+                        "subtitles"
+                    ) or []
+            except Exception:
+                pass
+            if attempt < tries - 1:
+                await asyncio.sleep(0.5)
+        return []
+
     try:
-        payload = await _get_json(
-            session,
-            "https://api.bilibili.com/x/player/v2",
-            {"bvid": bvid, "cid": cid},
-        )
-        if payload.get("code") != 0:
-            # 偶发 412 / -352 时重试一次；字幕失败不应该让整次看视频失败
-            await asyncio.sleep(0.4)
-            payload = await _get_json(
-                session,
+        candidates = []
+        if aid:
+            # 新播放器实际调用的接口；oid/pid 都是 aid，比 player/v2 更不容易串片
+            candidates = await subs_from(
+                "https://api.bilibili.com/x/v2/subtitle/web/view",
+                {
+                    "oid": aid,
+                    "pid": aid,
+                    "context_ext": '{"video_type":1}',
+                    "type": 1,
+                    "cur_production_type": 0,
+                    "preferred_language": "ai-zh",
+                    "playlist_switch": 0,
+                },
+                tries=2,
+            )
+        if not candidates:
+            candidates = await subs_from(
                 "https://api.bilibili.com/x/player/v2",
                 {"bvid": bvid, "cid": cid},
+                tries=3,
             )
-        if payload.get("code") != 0:
-            return {"text": "", "cues": []}
-        subs = ((payload.get("data") or {}).get("subtitle") or {}).get("subtitles") or []
+        if not candidates:
+            return {"text": "", "cues": [], "status": "empty"}
+
         chosen = None
-        for s in subs:
+        for s in candidates:
             if str(s.get("lan", "")).lower().startswith(("zh", "ai-zh")):
                 chosen = s
                 break
-        if chosen is None and subs:
-            chosen = subs[0]
+        if chosen is None:
+            chosen = candidates[0]
         if not chosen or not chosen.get("subtitle_url"):
-            return {"text": "", "cues": []}
+            return {"text": "", "cues": [], "status": "empty"}
+
         url = _sprite_url(str(chosen["subtitle_url"]))
         data = await _get_json(session, url)
-        lines = []
         cues = []
+        lines = []
         for item in data.get("body") or []:
             text = (item.get("content") or "").strip()
             if not text:
@@ -266,23 +298,34 @@ async def fetch_subtitle_data(
             sec = int(start)
             lines.append(f"[{sec // 60:02d}:{sec % 60:02d}] {text}")
             cues.append({"start": start, "end": end, "text": text})
+        if not cues:
+            return {"text": "", "cues": [], "status": "empty"}
+
+        # 字幕时间轴明显超出视频时长，基本就是串到别的视频了
+        if duration > 0 and max(c["end"] for c in cues) > duration * 1.5:
+            return {"text": "", "cues": [], "status": "mismatch"}
+
         out = "\n".join(lines)
         if max_chars > 0 and len(out) > max_chars:
             out = out[:max_chars] + "\n…（字幕过长已截断）"
-        result = {"text": out, "cues": cues}
+        result = {"text": out, "cues": cues, "status": "ok"}
         _cache_set(_SUB_CACHE, key, result)
         return result
     except Exception:
-        return {"text": "", "cues": []}
+        return {"text": "", "cues": [], "status": "error"}
 
 
 async def fetch_subtitle(
     session: aiohttp.ClientSession,
     bvid: str,
     cid: int,
-    max_chars: int = 6000,
+    max_chars: int = 0,
+    aid: int = 0,
+    duration: int = 0,
 ) -> str:
-    data = await fetch_subtitle_data(session, bvid, cid, max_chars=max_chars)
+    data = await fetch_subtitle_data(
+        session, bvid, cid, max_chars=max_chars, aid=aid, duration=duration
+    )
     return data["text"]
 
 
@@ -401,7 +444,6 @@ def select_smart_frames(
         return [candidates[len(candidates) // 2]]
 
     lo, hi = candidates[0][1], candidates[-1][1]
-    targets: list[float] = []
     valid_cues = []
     for cue in cues or []:
         try:
@@ -412,39 +454,35 @@ def select_smart_frames(
         mid = (cs + ce) / 2
         if lo <= mid <= hi:
             valid_cues.append(mid)
-    if valid_cues:
-        # 不按“字幕最多”堆在一起，按字幕顺序均匀取样
-        step = max(1, len(valid_cues) // (requested * 2))
-        targets.extend(valid_cues[::step])
 
-    # 再补一层时间覆盖，避免字幕只集中在前半段
-    if requested > 1:
-        targets.extend(
-            lo + (hi - lo) * i / (requested - 1)
-            for i in range(requested)
-        )
-
+    # 先按 requested 个时间桶铺满全片；每个桶里优先挑一条 cue，
+    # 这样字幕全挤在开头时，后面仍然有画面覆盖（不会只看 0–50 秒）。
     picked: list[tuple[int, int]] = []
     seen: set[int] = set()
-    for target in targets:
-        nearest = min(candidates, key=lambda e: abs(e[1] - target))
-        if nearest[0] in seen:
-            continue
+    for i in range(requested):
+        b0 = lo + (hi - lo) * i / requested
+        b1 = lo + (hi - lo) * (i + 1) / requested
+        bucket = [e for e in candidates if b0 <= e[1] <= b1]
+        if not bucket:
+            bucket = candidates
+        bucket_cues = [c for c in valid_cues if b0 <= c <= b1]
+        if bucket_cues:
+            target = min(bucket_cues, key=lambda c: abs(c - (b0 + b1) / 2))
+        else:
+            target = (b0 + b1) / 2
+        nearest = min(
+            (e for e in bucket if e[0] not in seen),
+            key=lambda e: abs(e[1] - target),
+            default=None,
+        )
+        if nearest is None:
+            nearest = next((e for e in candidates if e[0] not in seen), None)
+        if nearest is None:
+            break
         seen.add(nearest[0])
         picked.append(nearest)
-        if len(picked) >= requested:
-            break
-    picked.sort(key=lambda e: e[1])
 
-    if len(picked) < requested:
-        for item in candidates:
-            if item[0] in seen:
-                continue
-            seen.add(item[0])
-            picked.append(item)
-            if len(picked) >= requested:
-                break
-        picked.sort(key=lambda e: e[1])
+    picked.sort(key=lambda e: e[1])
     return picked[:requested]
 
 
@@ -607,7 +645,7 @@ async def prepare(
     frames: int = 0,
     max_frames: int = 40,
     initial_frames: int = 10,
-    subtitle_max_chars: int = 6000,
+    subtitle_max_chars: int = 0,
     at: list[float] | None = None,
     frame_width: int = 480,
     selection_mode: str = "smart",
@@ -628,10 +666,16 @@ async def prepare(
         covered_sec = int(times[-1]) if times else 0
 
         sub_data = await fetch_subtitle_data(
-            session, bvid, info["cid"], max_chars=subtitle_max_chars
+            session,
+            bvid,
+            info["cid"],
+            max_chars=subtitle_max_chars,
+            aid=info.get("aid", 0),
+            duration=info.get("duration", 0),
         )
         subtitle = sub_data["text"]
         cues = sub_data["cues"]
+        subtitle_status = sub_data.get("status", "empty")
 
         if initial:
             count = max(1, int(initial_frames or 10))
@@ -677,5 +721,6 @@ async def prepare(
         "picks": picks,
         "images": images,
         "subtitle": subtitle,
+        "subtitle_status": subtitle_status,
         "cue_count": len(cues),
     }

@@ -28,8 +28,9 @@ It does **not** download the full video and does **not** require `ffmpeg` or `yt
 - **Two stages, model-driven**: preview first, then choose a segment or the whole video.
 - **Light dependencies**: only `aiohttp`, `Pillow`, and `mcp`, all bundled with AstrBot.
 - **No video download**: uses Bilibili's official `videoshot` sprites; fast and disk-friendly.
-- **Optional subtitles**: configure a Bilibili cookie to read Chinese / AI subtitles; visual preview still works without it.
-- **Smart frame selection**: prefers frames near subtitle cues, then adds time coverage; no longer purely uniform.
+- **Full subtitles, selective frames**: `subtitle_max_chars=0` returns the full subtitle by default; only frames are capped by `initial_frames` / `max_frames`.
+- **Subtitle validation**: prefers the aid/cid-scoped subtitle endpoint and rejects cues whose timeline exceeds the video duration.
+- **Smart frame selection**: splits the timeline into N buckets and prefers a cue inside each bucket; early-only subtitles still get end-to-end coverage.
 - **Black-frame filter**: near-black shots are replaced by nearby storyboard frames when possible.
 - **Subtitle alignment**: returns the cue count so the model can relate a timestamp to the matching line.
 - **Configurable cap**: `max_frames=0` allows all frames; 20 / 40 / 60 are practical limits.
@@ -122,7 +123,7 @@ AstrBot → Plugins → **BiliWatch**:
 |---|---|---|
 | `initial_frames` | `10` | Frames in the first preview; 6–10 recommended |
 | `max_frames` | `40` | Per-call cap for the closer look; `0` = all frames allowed |
-| `subtitle_max_chars` | `6000` | Max subtitle characters included; `0` = no truncation |
+| `subtitle_max_chars` | `0` | `0` = full subtitles (recommended); use a positive cap only when context is tight |
 | `selection_mode` | `smart` | `smart` = subtitle cues + time coverage; `even` = uniform |
 | `avoid_dark` | `true` | Try nearby frames when a shot is near-black |
 | `frame_width` | `480` | Output frame width; 160×90 sources become 480×270 |
@@ -188,18 +189,20 @@ frames = 60
 
 `frames=0` uses the configured `max_frames`; if `max_frames=0`, all frames are allowed.
 
-### Does the model really choose?
+### Does the model choose the important frames?
 
-Yes, through **LLM tool calling**, not hard-coded plugin rules:
+Yes, through **LLM tool calling + full subtitles**, not keyword guessing:
 
-- tool descriptions tell the model to preview first and use `more` only if needed;
-- the preview text includes a next-step hint;
-- the model decides based on frames and subtitles;
-- the plugin only enforces `max_frames`.
+- `bili_watch_preview` returns the **full subtitle** (`subtitle_max_chars=0`) and a 10-frame overview;
+- the tool prompt tells the model to **read the full subtitle first**, not judge from 10 frames;
+- the model picks 3–8 important timestamps and calls `bili_watch_more(at="30,90,150")`;
+- the plugin only enforces `max_frames`; it does not decide semantic importance.
 
-If the model never asks for more, add a persona instruction such as:
+If the model is lazy, add a persona instruction:
 
-> Preview first. Only look closer when there is a clear plot turn, something worth commenting on, or something worth sharing. Do not go full-video every time.
+> Read the full subtitles first, pick the key timestamps yourself, then call `at` to look at those frames. Do not judge from the 10-frame overview alone.
+
+> The plugin does not make a second LLM call to score importance. That semantic judgement belongs to the current chat model; plugin-side keyword heuristics are easy to get wrong.
 
 ## How it works
 
@@ -207,9 +210,9 @@ If the model never asks for more, add a persona instruction such as:
 flowchart TB
   A[Model calls bili_watch_preview] --> B[view API: title/duration/cid]
   B --> C[videoshot: 10x10 sprites + timestamps]
-  B --> D[player/v2: subtitles]
+  B --> D[subtitle/web/view: validated subtitles]
   D --> C
-  C --> E[Smart: subtitle cues + time coverage]
+  C --> E[Smart: N time buckets, cue preferred in each]
   E --> F[Crop/resize; replace near-black shots]
   D --> G[Text: metadata + subtitles + next-step hint]
   F --> H[CallToolResult: TextContent + ImageContent...]
@@ -225,20 +228,39 @@ flowchart TB
 - The plugin crops each frame and resizes it to `frame_width` (480 by default, i.e. 480×270), encodes JPEG, and returns it as `ImageContent`.
 - If the storyboard `index` is empty, the plugin reads `pvdata` (big-endian uint16 seconds) as a fallback; timestamps support seconds and milliseconds.
 - AstrBot's local tool executor caches `ImageContent` and exposes it to the vision model.
-- Subtitles come from `x/player/v2` and require a Bilibili cookie.
+- Subtitles come from `x/v2/subtitle/web/view` (aid/cid-scoped) with `x/player/v2` as fallback, and require a Bilibili cookie; cues whose timeline exceeds the video duration are dropped.
 - Storyboard and subtitles are cached for 5 minutes to reduce duplicate requests.
 
-## Limitations
+## Limitations and known risks
+
+### Read these first
+
+- **The model may be lazy and judge from 10 frames**  
+  The plugin can only guarantee "full subtitles + 10-frame overview + a next-step hint"; it **cannot force the model to read the subtitles**. If the model skips them, conclusions may be wrong. Add to the persona prompt:
+  > Read the full subtitles first, pick the key timestamps yourself, then call `at`. Do not judge from the 10-frame overview alone.
+
+- **Bilibili subtitle API occasionally crosses videos**  
+  `player/v2` sometimes returns another video's subtitle URL. Two guards:
+  1. prefer `/x/v2/subtitle/web/view` (scoped by aid/cid);
+  2. drop subtitles whose timeline exceeds 1.5× the video duration (`subtitle_status=mismatch`).
+
+  ⚠️ If the wrong subtitle happens to be a similar length, it can still slip through. If subtitles clearly do not match the frames, retry or check another video.
+
+- **All frames can exceed model image limits**  
+  `max_frames=0` returns every storyboard frame at once (262 frames for a 25-minute video). Model/gateway limits may reject the request, silently drop later images, or squeeze out subtitles. Defaults (`40` / preview `10`) avoid this. **Do not set `0` then `start=0,end=0` on long videos**; use segmented `start/end`.
+
+- **No audio**  
+  Storyboards and subtitles carry no audio track. BGM, tone, and sound effects are unavailable; use a separate ASR/Whisper pipeline if you need them.
+
+### Other limitations
 
 - **Low resolution**: source frames are 160×90; upscaling cannot recover small on-screen text.
 - **Not every frame**: Bilibili samples by scene change; fast actions may be missed.
-- **No audio**: cannot hear BGM, tone, or sound effects; subtitles only cover what is said. Audio needs a separate ASR/Whisper pipeline.
 - **Smart needs subtitles**: without subtitles, selection falls back to time coverage and is not much smarter than uniform.
 - **No storyboard**: some videos have no snapshot sheet; the tool returns an error.
 - **No subtitles**: some videos have no AI subtitles/CC, or the cookie has expired.
 - **BV only**: BV numbers or links containing a BV number; `b23.tv` short links and `av` IDs are not resolved.
 - **First P only**: multi-P videos currently use the default cid; extend the tool if you need per-P frames.
-- **All frames are heavy**: `max_frames=0` can return hundreds of images and hit model limits.
 - **Bilibili rate limits**: rapid requests may return 412 / -352; the plugin retries subtitles once and caches results, but keep usage reasonable.
 - **Read-only**: no comments, dynamics, or account operations.
 
@@ -279,6 +301,18 @@ flowchart TB
 - Lower `max_frames` to 20–40;
 - Do not use `0` unless you really want a full-video pass;
 - Narrow `start` / `end` and extract again.
+
+### Subtitles do not match the frames (suspected cross-video subtitle)
+
+- The summary may say the timeline was discarded — that is the plugin protecting you, not a bug;
+- Retry once; if it persists, verify with another video or wait for the Bilibili API to recover;
+- The plugin never fabricates content from discarded subtitles.
+
+### The model gives a conclusion without citing subtitles or frames
+
+- That is the model skipping evidence, not the plugin failing to return it;
+- Add to the persona prompt: read the full subtitles first, then use `at` for key frames;
+- Ask it to quote `[mm:ss]` timestamps so you can verify.
 
 ## Privacy and security
 

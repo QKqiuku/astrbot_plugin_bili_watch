@@ -20,8 +20,8 @@
   "subtitle_max_chars": {
     "description": "字幕最多带多少字符",
     "type": "int",
-    "default": 6000,
-    "hint": "太长会占用上下文；0 表示不截断。"
+    "default": 0,
+    "hint": "0 = 全文（推荐：字幕要全读完，只让画面选着看）；只有上下文很紧时才填正数截断。"
   },
   "frame_width": {
     "description": "画面帧输出宽度",
@@ -33,7 +33,7 @@
     "description": "选帧策略",
     "type": "string",
     "default": "smart",
-    "hint": "smart = 字幕节点 + 时间覆盖（推荐）；even = 纯等间隔。没有字幕时 smart 会自动退回均匀选帧。"
+    "hint": "smart = 字幕节点 + 时间桶覆盖（推荐）；even = 纯等间隔。没有字幕时 smart 会自动退回时间桶覆盖。"
   },
   "avoid_dark": {
     "description": "自动跳过黑帧",

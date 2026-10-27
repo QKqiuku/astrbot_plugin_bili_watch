@@ -105,6 +105,27 @@ class BiliWatchCoreTests(unittest.TestCase):
         self.assertEqual(len(picks), 5)
         self.assertEqual(picks, sorted(picks, key=lambda x: x[1]))
 
+    def test_smart_selection_covers_whole_video_when_cues_are_early(self):
+        long_story = {
+            "images": ["sprite.jpg"],
+            "index": [0] + list(range(0, 1000, 50)),
+            "x_len": 10,
+            "y_len": 10,
+            "x_size": 160,
+            "y_size": 90,
+        }
+        early_cues = [
+            {"start": 1, "end": 2, "text": "开头 A"},
+            {"start": 3, "end": 4, "text": "开头 B"},
+            {"start": 5, "end": 6, "text": "开头 C"},
+        ]
+        picks = select_smart_frames(
+            long_story, early_cues, count=10, max_frames=10,
+        )
+        self.assertEqual(len(picks), 10)
+        self.assertGreaterEqual(max(t for _, t in picks), 850)
+        self.assertAlmostEqual(picks[0][1], 0, delta=100)
+
     def test_crop_frames_avoids_black_tile(self):
         class Resp:
             def __init__(self, data):
@@ -160,6 +181,91 @@ class BiliWatchCoreTests(unittest.TestCase):
         self.assertEqual(_normalize_index(index, duration=20), [0, 0, 8, 14])
         index = [0, {"timestamp": 0}, {"timestamp": 8000}]
         self.assertEqual(_normalize_index(index, duration=10), [0, 0, 8])
+
+    def test_smart_selection_one_frame(self):
+        picks = select_smart_frames(story(), [], count=1, max_frames=1)
+        self.assertEqual(picks, [(2, 20)])
+
+    def test_smart_selection_respects_start_end(self):
+        picks = select_smart_frames(story(), [], count=3, max_frames=3, start=20, end=40)
+        self.assertTrue(picks)
+        for _, t in picks:
+            self.assertGreaterEqual(t, 20)
+            self.assertLessEqual(t, 40)
+
+    def test_smart_selection_clamps_count_to_cap(self):
+        picks = select_smart_frames(story(), [], count=99, max_frames=2)
+        self.assertEqual(len(picks), 2)
+
+    def test_smart_selection_no_duplicate_times(self):
+        picks = select_smart_frames(story(), [], count=5, max_frames=5)
+        times = [t for _, t in picks]
+        self.assertEqual(len(times), len(set(times)))
+
+    def test_frame_signature_identical_and_different(self):
+        from bili_core import _frame_signature, _signature_distance
+
+        a = _frame_signature(PILImage.new("RGB", (160, 90), (128, 128, 128)))
+        b = _frame_signature(PILImage.new("RGB", (160, 90), (128, 128, 128)))
+        self.assertEqual(_signature_distance(a, b), 0)
+        half = PILImage.new("RGB", (160, 90), (0, 0, 0))
+        half.paste(PILImage.new("RGB", (80, 90), (255, 255, 255)), (0, 0))
+        c = _frame_signature(half)
+        self.assertGreater(_signature_distance(a, c), 0)
+
+    def test_crop_frames_switches_to_neighbor_when_identical(self):
+        import asyncio
+
+        class Resp:
+            def __init__(self, data):
+                self.data = data
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            def raise_for_status(self):
+                pass
+
+            async def read(self):
+                return self.data
+
+        class Session:
+            def get(self, *args, **kwargs):
+                return Resp(sprite_bytes)
+
+        sheet = PILImage.new("RGB", (320, 90), (128, 128, 128))
+        buf = io.BytesIO()
+        sheet.save(buf, format="JPEG")
+        sprite_bytes = buf.getvalue()
+
+        frame_story = {
+            "images": ["//fake/sprite.jpg"],
+            "index": [0, 0, 10],
+            "x_len": 2,
+            "y_len": 1,
+            "x_size": 160,
+            "y_size": 90,
+        }
+        images, used = asyncio.run(
+            crop_frames(
+                Session(),
+                frame_story,
+                [(0, 0), (1, 10)],
+                width=160,
+                avoid_dark=True,
+                avoid_similar=True,
+            )
+        )
+        self.assertEqual(len(images), 2)
+        self.assertNotEqual(used[1][0], 0)
+
+    def test_at_targets_snap_to_nearest(self):
+        picks = select_frames(story(), at=[0, 21, 9999], max_frames=10)
+        self.assertEqual(len(picks), 3)
+        self.assertLessEqual(picks[-1][1], 40)
 
     def test_invalid_range(self):
         with self.assertRaises(RuntimeError):
